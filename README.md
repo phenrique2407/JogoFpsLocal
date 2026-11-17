@@ -184,8 +184,21 @@ As constantes ficam no início do arquivo, na seção `AJUSTES DE JOGO`:
 | `AIR_STRAFE_CAP` | `1.6` | Quanto o strafe no ar soma por vez (bunny hop) |
 | `AIR_STRAFE_ACCEL` | `70` | Rapidez com que o strafe soma velocidade |
 | `MAX_HSPEED` | `28` | Velocidade horizontal máxima no ar |
+| `MOSTRAR_DEBUG` | `True` | Mostra os contadores de FPS e de entidades do Ursina (`False` esconde) |
 
 Outros valores úteis: `PORT` (porta da conexão, `5555`), `SPAWNS` (pontos de nascimento) e a lista de caixas do mapa (chamadas `add_box`).
+
+---
+
+## Desempenho
+
+O jogo foi otimizado para rodar bem em computadores simples:
+
+- **Mapa em uma única malha:** todas as caixas do mapa viram 1 objeto e 1 chamada de desenho (antes eram 16). A colisão continua usando a lista de caixas (`BOXES`).
+- **Objetos reaproveitados:** rastros dos tiros, flash de dano, clarão do cano e kill feed usam objetos criados uma vez só e reutilizados. Nada é criado nem destruído durante a partida, então o número de entidades fica **constante**. (Uma versão anterior deixava 6 entidades "órfãs" a cada morte por causa do kill feed.)
+- **HUD com cache:** a mira, o medidor de velocidade, as caixas de habilidade e os textos só são atualizados quando o valor muda.
+
+Para acompanhar, deixe `MOSTRAR_DEBUG = True`: o contador de entidades do Ursina deve ficar parado durante a partida (o valor inicial é maior que antes porque os objetos reutilizáveis já nascem criados).
 
 ---
 
@@ -211,13 +224,13 @@ Outros valores úteis: `PORT` (porta da conexão, `5555`), `SPAWNS` (pontos de n
 Tudo está em `fps_multiplayer.py`, na seguinte ordem:
 
 1. **Rede:** leitura dos argumentos (`host` / `join`) e a classe `Net`.
-2. **Mapa:** `add_box` (chão, paredes, torres, caixas), `SPAWNS` e a colisão por caixas (`box_hit`, `probe_wall`, `ray_box`).
+2. **Mapa:** `add_box` (chão, paredes, torres, caixas), `build_map` (junta tudo numa malha só), `SPAWNS` e a colisão por caixas (`box_hit`, `probe_wall`, `ray_box`).
 3. **Modelos 3D:** leitor de `.glb` (`load_glb`) e `find_asset`.
 4. **Ajustes de jogo:** as constantes.
 5. **Estado:** classes `P` (jogador local) e `R` (jogador remoto), times e modelos.
 6. **HUD:** helpers (`q`, `para`, `txt`), mira, placar, cartão, habilidades, kill feed e `update_hud`.
 7. **Menu:** sliders de sensibilidade e `toggle_menu`.
-8. **Ações:** `shoot`, `tracer`, `respawn`, `air_strafe` e `input`.
+8. **Ações:** `shoot`, `tracer` (com pool de objetos), `respawn`, `air_strafe` e `input`.
 9. **Loop principal:** `handle_net` (rede) e `update` (física, câmera, tiro, remoto, HUD).
 
 ---
