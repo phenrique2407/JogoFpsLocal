@@ -95,10 +95,33 @@ Sky()
 BOXES = []  # (minx,miny,minz,maxx,maxy,maxz)
 
 
+MAP_DATA = []  # (caixa, cor) - usado para montar a malha do mapa
+
+
 def add_box(cx, cy, cz, sx, sy, sz, col):
-    BOXES.append((cx - sx / 2, cy - sy / 2, cz - sz / 2, cx + sx / 2, cy + sy / 2, cz + sz / 2))
-    Entity(model="cube", position=(cx, cy, cz), scale=(sx, sy, sz), color=col,
-           texture="white_cube", texture_scale=(max(sx, sz) / 2, sy / 2 + 0.01))
+    b = (cx - sx / 2, cy - sy / 2, cz - sz / 2, cx + sx / 2, cy + sy / 2, cz + sz / 2)
+    BOXES.append(b)
+    MAP_DATA.append((b, col))
+
+
+def build_map():
+    """Junta o mapa inteiro em UMA malha (1 entidade e 1 chamada de desenho, em vez de uma por caixa)."""
+    verts, uvs, cols, tris = [], [], [], []
+    for (x0, y0, z0, x1, y1, z1), col in MAP_DATA:
+        dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+        faces = (((x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1), dx, dz),   # topo
+                 ((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1), dx, dz),   # base
+                 ((x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), dx, dy),   # lado -z
+                 ((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1), dx, dy),   # lado +z
+                 ((x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0), dz, dy),   # lado -x
+                 ((x1, y0, z0), (x1, y0, z1), (x1, y1, z1), (x1, y1, z0), dz, dy))   # lado +x
+        for *corners, w, h in faces:
+            i = len(verts)
+            verts.extend(corners)
+            uvs.extend(((0, 0), (w / 2, 0), (w / 2, h / 2), (0, h / 2)))  # grade de 2 em 2 metros
+            cols.extend([col] * 4)
+            tris.extend(((i, i + 1, i + 2), (i, i + 2, i + 3)))
+    Entity(model=Mesh(vertices=verts, triangles=tris, uvs=uvs, colors=cols), texture="white_cube", double_sided=True)
 
 
 add_box(0, -0.5, 0, 62, 1, 62, color.dark_gray)                     # chao
@@ -114,6 +137,7 @@ for c in [(-8, 6), (8, -6)]:
     add_box(c[0], 0.5, c[1], 3, 1, 3, color.olive)                   # degraus
 for c in [(-4, -18), (5, 20), (22, -4), (-22, 5)]:
     add_box(c[0], 0.6, c[1], 2, 1.2, 2, color.brown)                 # caixas
+build_map()
 
 SPAWNS = [(-26, 0, 0), (26, 0, 0)]
 
@@ -281,6 +305,13 @@ SPREAD = 1.6         # dispersao maxima em GRAUS (menor = mais preciso)
 AIR_STRAFE_CAP = 1.6     # quanto o strafe no ar consegue somar por vez (bunny hop)
 AIR_STRAFE_ACCEL = 70    # velocidade com que isso e somado
 MAX_HSPEED = 28          # velocidade horizontal maxima no ar
+MOSTRAR_DEBUG = True     # contadores de FPS / entidades do Ursina (False = esconde)
+if not MOSTRAR_DEBUG:
+    for _n in ("fps_counter", "entity_counter", "collider_counter"):
+        try:
+            getattr(window, _n).enabled = False
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------- ESTADO
@@ -418,6 +449,7 @@ for _dx, _dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
     xh_parts.append((_dx, _dy, _ol, _fg))
 q(0, 0, .004, .004, XH, origin=(0, 0))
 xh_kick, hm_t, msg_t, hint_t = 0.0, 0.0, 0.0, 14.0
+muzzle_t, flash_t = 0.0, 0.0
 
 
 def set_crosshair(gap):
@@ -489,6 +521,10 @@ def make_box(x, y, w, h, name, key, big=False):
 
 
 def set_box(d, prog, state):  # state: 0 pronto, 1 carregando, 2 ativo
+    key = (state, int(prog * 40))
+    if d.get("_k") == key:   # nada mudou: nao mexe nos objetos
+        return
+    d["_k"] = key
     d["fill"].scale_y = max(.001, d["h"] * prog)
     if state == 2:
         d["border"].color, d["fill"].color = WHITE, Color(1, 1, 1, .40)
@@ -507,34 +543,55 @@ b_slide = make_box(_x, BOX_Y, .075, BOX_H, "SLIDE", "SHIFT")
 _x -= .087
 b_wall = make_box(_x, BOX_Y, .075, BOX_H, "PAREDE", "W")
 
-# ---- kill feed (canto superior direito)
-feed = []
+# ---- kill feed (canto superior direito): 4 "vagas" criadas uma vez e reaproveitadas
+FEED_N = 3
+feed_slots = []
+for _i in range(FEED_N):
+    _e = Entity(parent=hud_root, enabled=False)
+    para(0, 0, .43, .036, PANEL_DK, slant=.008, z=.01, parent=_e)
+    para(0, 0, .43, .003, OW_ORANGE, slant=.008, parent=_e)
+    _strip = para(0, 0, .007, .036, WHITE, slant=.008, parent=_e)
+    _k = txt("", .03, .019, scale=.85, parent=_e)
+    txt("ELIMINOU", .215, .019, scale=.7, col=DIM, origin=(0, 0), parent=_e)
+    _v = txt("", .41, .019, scale=.85, origin=(.5, 0), parent=_e)
+    feed_slots.append({"e": _e, "strip": _strip, "k": _k, "v": _v})
+feed = []   # entradas ativas, da mais nova para a mais antiga: [vaga, tempo restante]
+
+
+def layout_feed():
+    for i, f in enumerate(feed):
+        f[0]["e"].x, f[0]["e"].y = RX - .46, .41 - i * .046
 
 
 def add_feed(killer_is_me):
     kc, vc = (MY_UI, OTHER_UI) if killer_is_me else (OTHER_UI, MY_UI)
     kn, vn = (MY_TEAM[2], OTHER_TEAM[2]) if killer_is_me else (OTHER_TEAM[2], MY_TEAM[2])
-    e = Entity(parent=hud_root)
-    para(0, 0, .43, .036, PANEL_DK, slant=.008, z=.01, parent=e)
-    para(0, 0, .43, .003, OW_ORANGE, slant=.008, parent=e)
-    para(0, 0, .007, .036, kc, slant=.008, parent=e)
-    txt(kn, .03, .019, scale=.85, col=kc, parent=e)
-    txt("ELIMINOU", .215, .019, scale=.7, col=DIM, origin=(0, 0), parent=e)
-    txt(vn, .41, .019, scale=.85, col=vc, origin=(.5, 0), parent=e)
-    feed.insert(0, [e, 5.0])
-    while len(feed) > 4:
-        destroy(feed.pop()[0])
+    if len(feed) >= FEED_N:                      # cheio: reaproveita a vaga da mais antiga
+        slot = feed.pop()[0]
+    else:
+        used = [f[0] for f in feed]
+        slot = next(sl for sl in feed_slots if all(sl is not u for u in used))
+    slot["strip"].color = kc
+    slot["k"].text, slot["k"].color = kn, kc
+    slot["v"].text, slot["v"].color = vn, vc
+    slot["e"].enabled = True
+    feed.insert(0, [slot, 5.0])
+    layout_feed()
 
 
 hint = txt("WASD  |  ESPACO pula (segure = bunny hop)  |  SHIFT desliza  |  E dash  |  CLICK atira  |  M opcoes",
            0, -.492, scale=.8, col=DIM, origin=(0, 0))
+_hud = {}   # ultimos valores aplicados (evita refazer o que nao mudou)
 
 
 def update_hud(dt, hs):
-    global xh_kick, hm_t, msg_t, hint_t
+    global xh_kick, hm_t, msg_t, hint_t, muzzle_t, flash_t
     # mira
     xh_kick = max(0.0, xh_kick - dt * .12)
-    set_crosshair(.010 + min(hs, MAX_HSPEED) * .0006 + xh_kick)
+    gap = round(.010 + min(hs, MAX_HSPEED) * .0006 + xh_kick, 3)
+    if gap != _hud.get("gap"):
+        _hud["gap"] = gap
+        set_crosshair(gap)
     prog = 1 - P.shoot_cd / SHOT_CD
     # hitmarker
     if hm_t > 0:
@@ -552,11 +609,13 @@ def update_hud(dt, hs):
     set_txt(card_speed, f"{hs:.0f}")
     set_txt(card_kd, f"ELIM {P.kills}     MORTES {P.deaths}")
     n = round(min(hs / MAX_HSPEED, 1) * N_SEG)
-    for i, sg in enumerate(segs):
-        if i >= n:
-            sg.color = Color(1, 1, 1, .12)
-        else:
-            sg.color = WHITE if i < N_SEG * .5 else OW_ORANGE if i < N_SEG * .8 else Color(1, .35, .1, 1)
+    if n != _hud.get("n"):
+        _hud["n"] = n
+        for i, sg in enumerate(segs):
+            if i >= n:
+                sg.color = Color(1, 1, 1, .12)
+            else:
+                sg.color = WHITE if i < N_SEG * .5 else OW_ORANGE if i < N_SEG * .8 else Color(1, .35, .1, 1)
     # habilidades
     set_box(b_gun, prog, 0 if prog >= 1 else 1)
     set_txt(b_gun["ammo"], "1" if prog >= 1 else "0")
@@ -565,21 +624,44 @@ def update_hud(dt, hs):
     set_box(b_dash, 1 if P.dash_ready else 0, 2 if P.dash_t > 0 else 0 if P.dash_ready else 1)
     wl = max(0.0, 1 - P.wall_t / 2.5)
     set_box(b_wall, wl, 2 if P.wallrun else 0 if wl > 0 else 1)
-    # kill feed
-    for i, f in enumerate(list(feed)):
+    # kill feed: expira as entradas antigas
+    expired = False
+    for f in list(feed):
         f[1] -= dt
         if f[1] <= 0:
-            destroy(f[0])
+            f[0]["e"].enabled = False
             feed.remove(f)
-    for i, f in enumerate(feed):
-        f[0].x, f[0].y = RX - .46, .41 - i * .046
-    # dica de controles some depois de um tempo
+            expired = True
+    if expired:
+        layout_feed()
+    # efeitos curtos: clarao do cano, flash de dano e rastros dos tiros
+    if muzzle_t > 0:
+        muzzle_t -= dt
+        if muzzle_t <= 0:
+            muzzle.enabled = False
+    if flash_t > 0:
+        flash_t -= dt
+        if flash_t <= 0:
+            dmg_flash.enabled = False
+    if tracer_live:
+        for t in tracer_live:
+            t[1] -= dt
+            if t[1] <= 0:
+                t[0].enabled = False
+            else:
+                c = t[2]
+                t[0].color = Color(c[0], c[1], c[2], t[1] / .18)
+        tracer_live[:] = [t for t in tracer_live if t[1] > 0]
+    # dica de controles: some devagar depois de um tempo
     if hint_t > 0:
         hint_t -= dt
-        hint.color = Color(1, 1, 1, .6 * min(1, hint_t / 3))
+        if hint_t < 3:
+            a_ = round(.6 * max(hint_t, 0) / 3, 2)
+            if a_ != _hud.get("ha"):
+                _hud["ha"] = a_
+                hint.color = Color(1, 1, 1, a_)
         if hint_t <= 0:
             hint.enabled = False
-
 
 SENS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"sens_{role}.json")
 SENS_X, SENS_Y = 40.0, 40.0
@@ -640,21 +722,33 @@ def look_dir():
     return (math.sin(y) * math.cos(pt), -math.sin(pt), math.cos(y) * math.cos(pt))
 
 
+# Tiros e flashes reaproveitam objetos ja criados (nada e criado/destruido durante o jogo)
+TRACER_N = 16
+tracer_pool = [Entity(model="cube", color=WHITE, enabled=False) for _ in range(TRACER_N)]
+tracer_live = []   # [entidade, tempo restante, cor]
+_tr_i = 0
+dmg_flash = Entity(parent=camera.ui, model="quad", scale=2, color=Color(1, 0, 0, .3), z=-.2, enabled=False)
+
+
 def tracer(a, b, col=WHITE):
+    global _tr_i
     a, b = Vec3(*a), Vec3(*b)
+    e = tracer_pool[_tr_i]
+    _tr_i = (_tr_i + 1) % TRACER_N
+    tracer_live[:] = [t for t in tracer_live if t[0] is not e]
     c = Color(col[0] * .6 + .4, col[1] * .6 + .4, col[2] * .6 + .4, 1)  # tom do time, bem claro
-    e = Entity(model="cube", color=c, position=(a + b) / 2, scale=(.045, .045, max(.1, (b - a).length())))
+    e.enabled = True
+    e.position = (a + b) / 2
+    e.scale = (.045, .045, max(.1, (b - a).length()))
+    e.color = c
     e.look_at(b)
-    try:
-        e.animate_color(Color(c[0], c[1], c[2], 0), duration=.16)
-    except Exception:
-        pass
-    destroy(e, delay=.18)
+    tracer_live.append([e, .18, c])
 
 
 def flash_red():
-    f = Entity(parent=camera.ui, model="quad", scale=2, color=Color(1, 0, 0, .3))
-    destroy(f, delay=.1)
+    global flash_t
+    dmg_flash.enabled = True
+    flash_t = .1
 
 
 def respawn():
@@ -698,8 +792,8 @@ def shoot():
     gun.z = GUN_POS[2] - .12
     gun.rotation_x = -7
     muzzle.enabled = True
-    invoke(setattr, muzzle, "enabled", False, delay=.05)
-    global xh_kick, hm_t
+    global xh_kick, hm_t, muzzle_t
+    muzzle_t = .05
     xh_kick = .025
     if killed:
         hm_t = .35
