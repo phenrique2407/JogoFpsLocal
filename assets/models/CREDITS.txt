@@ -1,0 +1,6 @@
+Animated Base Character by Quaternius (https://poly.pizza/u/Quaternius)
+Modelo: https://poly.pizza/m/cwYvO5UauX
+Licenca: CC-BY 3.0 (https://creativecommons.org/licenses/by/3.0/) via Poly Pizza
+Alteracao feita pelo jogo: apenas as cores (degrade do time). A malha, o esqueleto e as animacoes sao os do arquivo original.
+
+Shotgun by Quaternius - confira a licenca na pagina de origem do modelo.
